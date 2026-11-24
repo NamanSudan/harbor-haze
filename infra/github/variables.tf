@@ -26,7 +26,7 @@ variable "collaborators" {
 variable "required_checks" {
   description = "CI job names that must pass before a PR can merge"
   type        = list(string)
-  default     = ["lint-and-test", "docker-build", "terraform"]
+  default     = ["branch-policy", "lint-and-test", "docker-build", "terraform"]
 }
 
 variable "required_approvals" {
@@ -47,4 +47,15 @@ variable "labels" {
     "data-quality"    = "d93f0b"
     "report"          = "bfdadc"
   }
+}
+
+variable "protected_branches" {
+  type    = list(string)
+  default = ["main", "dev"]
+}
+
+variable "enable_branch_protection" {
+  description = "Needs GitHub Pro/Team for a private repo (or a public repo)"
+  type        = bool
+  default     = false
 }
