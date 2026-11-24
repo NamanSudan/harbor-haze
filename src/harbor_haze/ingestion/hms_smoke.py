@@ -18,6 +18,7 @@ import shapefile
 from shapely.geometry import Point, shape
 
 from harbor_haze.common import DATA_DIR, LAKE, download, load_config, log, record, setup_logging, window_days
+from harbor_haze.ingestion.ghcnh import merge_existing
 
 OUT = LAKE / "raw" / "hms_smoke"
 CACHE = DATA_DIR / "cache" / "hms"
@@ -66,7 +67,7 @@ def run(window: str) -> None:
         part = table.filter(pc.equal(pc.year(table["date"]), year))
         dest = OUT / f"year={year}"
         dest.mkdir(parents=True, exist_ok=True)
-        pq.write_table(part, dest / "part-0.parquet")
+        pq.write_table(merge_existing(dest / "part-0.parquet", part, "date"), dest / "part-0.parquet")
     smoky = sum(1 for v in rows["smoke_density"] if v)
     log.info("HMS smoke: %d day(s), %d with smoke over the port", len(rows["date"]), smoky)
     record("hms_smoke", days=len(rows["date"]), smoky_days=smoky, missing=rows["file_found"].count(False))
