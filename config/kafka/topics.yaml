@@ -1,0 +1,18 @@
+# Kafka topics, created by the `kafka-init` service on `make up` (idempotent).
+# Keys: MMSI for vessel topics, station/site id for the others, so one source stays ordered per partition.
+topics:
+  - name: ais.positions
+    partitions: 3
+    config: {retention.ms: "604800000", cleanup.policy: delete}
+  - name: ais.static
+    partitions: 1
+    config: {cleanup.policy: compact}
+  - name: airnow.observations
+    partitions: 1
+    config: {retention.ms: "2592000000", cleanup.policy: delete}
+  - name: weather.observations
+    partitions: 1
+    config: {retention.ms: "2592000000", cleanup.policy: delete}
+  - name: features.vessel_hourly
+    partitions: 1
+    config: {retention.ms: "2592000000", cleanup.policy: delete}

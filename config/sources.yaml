@@ -1,0 +1,61 @@
+# Single source of truth for what gets ingested. Every pipeline reads this file;
+# change the study area or the windows here, never in code.
+
+study_area:
+  name: San Pedro Bay (Port of Los Angeles / Long Beach)
+  # Port complex centroid, used for distance filters (monitors, weather stations, smoke)
+  center: {lat: 33.735, lon: -118.245}
+  # Vessel bounding box: both ports, the anchorages and the approach lanes
+  bbox: {min_lat: 33.35, max_lat: 33.85, min_lon: -118.55, max_lon: -117.95}
+  # Air-quality monitors within this radius of the center are kept
+  monitor_radius_km: 30
+  # Hourly grid used to aggregate vessel activity (degrees; 0.02 deg is about 2 km)
+  grid_deg: 0.02
+
+# Historical windows (inclusive). Two seasons on purpose: fall 2021 is the peak of the
+# anchorage queue; fall 2024 is after ships were held offshore. Same months both years.
+windows:
+  dev:
+    - {start: 2024-09-01, end: 2024-09-02}
+  full:
+    - {start: 2021-09-01, end: 2021-11-30}
+    - {start: 2024-09-01, end: 2024-11-30}
+
+sources:
+  ais_history:
+    # 2009-2023: one zipped CSV per day for all US waters
+    csv_url: https://coast.noaa.gov/htdata/CMSP/AISDataHandler/{year}/AIS_{year}_{month:02d}_{day:02d}.zip
+    # 2024+: one GeoParquet per day (geometry is a WKB point)
+    parquet_url: https://ocmgeodatastor1.blob.core.windows.net/marinecadastre/ais{year}/ais-{year}-{month:02d}-{day:02d}.parquet
+    parquet_from_year: 2024
+    days_per_batch: 4          # national files staged on disk at once (about 2 GB each unzipped)
+  epa_hourly:
+    url: https://aqs.epa.gov/aqsweb/airdata/hourly_{param}_{year}.zip
+    params:
+      "88101": pm25            # PM2.5 FRM/FEM, ug/m3
+      "88502": pm25_nonref     # PM2.5 continuous monitors not used for regulation (more sites)
+      "42602": no2             # NO2, ppb
+      "WIND": wind             # wind speed/direction at monitors
+    state_code: "06"
+  ghcnh:
+    url: https://www.ncei.noaa.gov/oa/global-historical-climatology-network/hourly/access/by-year/{year}/parquet/GHCNh_{station}_{year}.parquet
+    stations:
+      USW00023129: Long Beach Airport
+      USW00023174: Los Angeles International Airport
+    columns: [temperature, dew_point_temperature, relative_humidity, wind_direction, wind_speed,
+              wind_gust, station_level_pressure, precipitation, visibility]
+  hms_smoke:
+    url: https://satepsanone.nesdis.noaa.gov/pub/FIRE/web/HMS/Smoke_Polygons/Shapefile/{year}/{month:02d}/hms_smoke{year}{month:02d}{day:02d}.zip
+
+live:
+  aisstream:
+    url: wss://stream.aisstream.io/v0/stream
+    message_types: [PositionReport, ShipStaticData, StandardClassBPositionReport]
+  airnow:
+    url: https://www.airnowapi.org/aq/data/
+    parameters: [PM25, NO2, OZONE]
+    poll_seconds: 900
+  nws:
+    url: https://api.weather.gov/stations/{station}/observations/latest
+    stations: [KLGB, KLAX]
+    poll_seconds: 600

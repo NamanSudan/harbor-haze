@@ -1,0 +1,32 @@
+# secrets and local settings
+.env
+*.pem
+*.p8
+*.key
+
+# python
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+# data lake, downloads and Spark state (rebuilt with `make ingest`)
+data/*
+!data/README.md
+logs/
+spark-warehouse/
+metastore_db/
+derby.log
+
+# terraform
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+terraform.tfvars
+crash.log
+
+.DS_Store
+.idea/
+.vscode/
