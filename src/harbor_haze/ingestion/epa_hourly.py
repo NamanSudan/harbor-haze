@@ -2,12 +2,14 @@
 
 Each national file (one per parameter and year) is read by Spark, cut to California monitors
 within `monitor_radius_km` of the port and to the window's days, and written to
-lake/raw/epa_hourly/param=<name>/year=<yyyy>. A rerun rebuilds the same partitions.
+lake/raw/epa_hourly/param=<name>/date=<yyyy-mm-dd> (UTC day). A rerun replaces only the days of its
+window, so a small window never wipes days loaded earlier.
 """
 
 from __future__ import annotations
 
 import argparse
+import shutil
 import zipfile
 
 from pyspark.sql import Column
@@ -47,9 +49,12 @@ def run(window: str) -> None:
                 record("epa_hourly", param=name, year=year, status="missing", url=url)
                 continue
             csv_dir = CACHE / zpath.stem
-            if not csv_dir.exists():
+            if not csv_dir.exists():  # extract to a temp dir and rename, so a crash never leaves half a CSV
+                tmp_dir = csv_dir.with_name(csv_dir.name + ".part")
+                shutil.rmtree(tmp_dir, ignore_errors=True)
                 with zipfile.ZipFile(zpath) as z:
-                    z.extractall(csv_dir)
+                    z.extractall(tmp_dir)
+                tmp_dir.rename(csv_dir)
             df = spark.read.option("header", True).csv(str(csv_dir))
             rows_in = df.count()
             lat, lon = F.col("Latitude").cast("double"), F.col("Longitude").cast("double")
@@ -76,11 +81,14 @@ def run(window: str) -> None:
                 )
                 .dropDuplicates(["site_id", "poc", "parameter_code", "ts_utc"])
                 .withColumn("param", F.lit(name))
-                .withColumn("year", F.lit(year))
+                .withColumn("date", F.to_date("ts_utc"))
+                .cache()
             )
-            out.coalesce(1).write.mode("overwrite").partitionBy("param", "year").parquet(str(OUT))
-            kept = spark.read.parquet(str(OUT / f"param={name}" / f"year={year}"))
-            n_kept, n_sites = kept.count(), kept.select("site_id").distinct().count()
+            n_kept, n_sites = out.count(), out.select("site_id").distinct().count()
+            if n_kept:
+                # dynamic partition overwrite: only the (param, date) partitions present in `out` are replaced
+                out.repartition("date").write.mode("overwrite").partitionBy("param", "date").parquet(str(OUT))
+            out.unpersist()
             log.info(
                 "EPA %s %s: %s national rows -> %s kept at %d sites", name, year, f"{rows_in:,}", f"{n_kept:,}", n_sites
             )

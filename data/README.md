@@ -5,7 +5,7 @@ Nothing here is committed except this file. Everything is rebuilt by `make inges
 | Path | Contents |
 |---|---|
 | `lake/raw/ais/date=YYYY-MM-DD/` | Vessel positions in the study bbox (canonical schema in `src/harbor_haze/features.py`) |
-| `lake/raw/epa_hourly/param=<pm25\|pm25_nonref\|no2\|wind>/year=YYYY/` | Hourly monitor readings within 30 km of the port |
+| `lake/raw/epa_hourly/param=<pm25\|pm25_nonref\|no2\|wind>/date=YYYY-MM-DD/` | Hourly monitor readings within 30 km of the port |
 | `lake/raw/ghcnh/station=<id>/year=YYYY/` | Hourly weather at the configured stations |
 | `lake/raw/hms_smoke/year=YYYY/` | One row per day: smoke density over the port (0-3) |
 | `lake/raw/vessel_registry/` | Latest type / size per MMSI |

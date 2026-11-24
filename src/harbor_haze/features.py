@@ -65,7 +65,10 @@ def _distinct_vessels(cond: Column) -> Column:
 
 def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
     """Aggregate positions to one row per (hour, cell)."""
-    stationary = F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS)
+    # coalesce: a ping with unknown speed and an "underway" status would otherwise be null and count as neither
+    stationary = F.coalesce(
+        F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS), F.lit(False)
+    )
     cls = vessel_class(F.col("vessel_type"))
     df = with_grid(positions, grid_deg)
     return (

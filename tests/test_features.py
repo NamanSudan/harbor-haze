@@ -35,3 +35,9 @@ def test_vessel_hourly_counts_by_cell_and_class(spark):
     assert port.mean_sog_underway == 12.0
     other = out[(33.6, -118.1)]
     assert (other.n_vessels, other.n_tug, other.n_stationary) == (1, 1, 1)
+
+
+def test_unknown_speed_counts_as_underway_not_dropped(spark):
+    rows = [row(7, 0, 33.741, -118.241, None, 0, 70), row(8, 0, 33.741, -118.241, None, 5, 70)]
+    r = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()[0]
+    assert (r.n_vessels, r.n_stationary, r.n_underway) == (2, 1, 1)
