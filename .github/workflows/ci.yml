@@ -37,13 +37,17 @@ jobs:
         if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
         run: |
-          merged=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
-                     --jq '[.[] | select(.merged_at != null)] | length')
-          if [ "$merged" = "0" ]; then
-            echo "::error::${{ github.sha }} was pushed to ${{ github.ref_name }} directly, not merged from a PR."; exit 1
+          # A PR merge makes the branch tip exactly that PR's merge commit, and the PR's base is this branch.
+          # A direct push (even of commits that were reviewed elsewhere) does not.
+          ok=$(gh api "repos/${{ github.repository }}/commits/$SHA/pulls" --jq \
+               "[.[] | select(.merged_at != null and .base.ref == \"$BRANCH\" and .merge_commit_sha == \"$SHA\")] | length")
+          if [ "$ok" = "0" ]; then
+            echo "::error::$SHA on $BRANCH is not the merge of a pull request into $BRANCH (direct push?)"; exit 1
           fi
-          echo "ok: merged through a pull request"
+          echo "ok: $SHA is a PR merge into $BRANCH"
 
   lint-and-test:
     runs-on: ubuntu-latest

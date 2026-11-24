@@ -10,7 +10,9 @@ resource "github_repository" "repo" {
   has_projects = true
   has_wiki     = false
 
-  allow_merge_commit     = false
+  # feature -> dev: squash (one commit per PR). dev -> main: merge commit, so dev and main keep a shared
+  # history and the next promotion only shows new work.
+  allow_merge_commit     = true
   allow_squash_merge     = true
   allow_rebase_merge     = false
   delete_branch_on_merge = true
@@ -58,9 +60,8 @@ resource "github_branch_protection" "protected" {
     contexts = var.required_checks
   }
 
-  required_linear_history = true
-  allows_force_pushes     = false
-  allows_deletions        = false
+  allows_force_pushes = false
+  allows_deletions    = false
 }
 
 resource "github_issue_label" "label" {
