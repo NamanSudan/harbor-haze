@@ -82,8 +82,13 @@ tests/             unit tests (no network, Spark in local mode)
 
 ## How we work
 
-- `main` is protected: every change lands through a pull request with one approving review and
-  green CI (lint, tests, secret scan, image build, Terraform validate).
+- **`dev`** is where work is integrated and tested; **`main`** holds the deliverable.
+  Branch off `dev` (`feat/...`, `fix/...`), open a PR into `dev`, and get one teammate's approval.
+  When `dev` is ready, a PR from `dev` into `main` promotes it.
+- Nobody commits or pushes straight to `dev` or `main`. CI (`branch-policy`) fails PRs that break the
+  flow and flags any commit on `dev`/`main` that did not come from a merged PR; the git hooks from
+  `make setup` stop it locally. Every PR also needs green lint, tests, secret scan, image build and
+  Terraform validate.
 - One issue per task, labelled by lane (`lane: ingestion`, `lane: warehouse`, `lane: modeling`, ...).
 - Keys live only in `.env` (gitignored). `make setup` installs pre-commit hooks that block
   private keys and secrets.

@@ -27,9 +27,25 @@ resource "github_repository_collaborator" "member" {
   permission = each.value
 }
 
-resource "github_branch_protection" "main" {
+# dev = integration and testing, main = the deliverable. New work branches off dev and lands
+# through a PR; dev is promoted to main through a PR.
+resource "github_branch" "dev" {
+  repository    = github_repository.repo.name
+  branch        = "dev"
+  source_branch = "main"
+}
+
+resource "github_branch_default" "default" {
+  repository = github_repository.repo.name
+  branch     = github_branch.dev.branch
+}
+
+# GitHub only enforces branch protection on private repos with a paid plan (Pro / Team). Until then the same
+# rules are enforced by .github/workflows/ci.yml (branch-policy job) and the pre-commit/pre-push hooks.
+resource "github_branch_protection" "protected" {
+  for_each       = var.enable_branch_protection ? toset(var.protected_branches) : toset([])
   repository_id  = github_repository.repo.node_id
-  pattern        = "main"
+  pattern        = each.key
   enforce_admins = true
 
   required_pull_request_reviews {

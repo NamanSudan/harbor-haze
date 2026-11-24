@@ -1,19 +1,50 @@
-# Pull-request gates. These job names are the required status checks on main
+# Pull-request gates. These job names are the required status checks on main and dev
 # (infra/github/variables.tf -> required_checks); rename them in both places.
 name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Branch flow: feature branch -> PR into dev -> PR from dev into main. Every commit on dev/main
+  # must come from a merged PR. (Also enforced by GitHub branch protection when the plan allows it.)
+  branch-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PRs follow feature -> dev -> main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          echo "PR: $HEAD -> $BASE"
+          if [ "$BASE" = "main" ] && [ "$HEAD" != "dev" ]; then
+            echo "::error::Only dev can be merged into main. Open your PR against dev."; exit 1
+          fi
+          if [ "$BASE" = "dev" ] && [ "$HEAD" = "main" ]; then
+            echo "::error::main is never merged back into dev."; exit 1
+          fi
+      - name: commits on dev/main come from merged PRs
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          merged=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+                     --jq '[.[] | select(.merged_at != null)] | length')
+          if [ "$merged" = "0" ]; then
+            echo "::error::${{ github.sha }} was pushed to ${{ github.ref_name }} directly, not merged from a PR."; exit 1
+          fi
+          echo "ok: merged through a pull request"
+
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
