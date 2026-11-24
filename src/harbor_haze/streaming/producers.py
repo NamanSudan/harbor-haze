@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import signal
 import time
@@ -166,8 +167,10 @@ async def run_aisstream(cfg: dict, sink: Sink) -> None:
 
 
 def airnow_bbox(cfg: dict) -> str:
-    c, r = cfg["study_area"]["center"], cfg["study_area"]["monitor_radius_km"] / 111.0
-    return f"{c['lon'] - r:.3f},{c['lat'] - r:.3f},{c['lon'] + r:.3f},{c['lat'] + r:.3f}"
+    c, km = cfg["study_area"]["center"], cfg["study_area"]["monitor_radius_km"]
+    dlat = km / 111.0
+    dlon = km / (111.0 * math.cos(math.radians(c["lat"])))  # a degree of longitude is shorter at 33.7 N
+    return f"{c['lon'] - dlon:.3f},{c['lat'] - dlat:.3f},{c['lon'] + dlon:.3f},{c['lat'] + dlat:.3f}"
 
 
 def aqs_site_id(code: str | None) -> str | None:
@@ -188,7 +191,8 @@ def normalise_airnow(row: dict) -> dict:
         "lon": row.get("Longitude"),
         "ts": row["UTC"] + ":00Z",
         "parameter": row.get("Parameter"),
-        "value": row.get("RawConcentration") if row.get("RawConcentration") not in (None, -999) else row.get("Value"),
+        # raw hourly concentration only; AirNow's "Value" for PM2.5 is a multi-hour NowCast (not like EPA hourly)
+        "value": row.get("RawConcentration") if row.get("RawConcentration") not in (None, -999) else None,
         "unit": row.get("Unit"),
         "aqi": row.get("AQI"),
         "category": row.get("Category"),
@@ -221,7 +225,11 @@ def run_airnow(cfg: dict, sink: Sink, once: bool) -> None:
             r.raise_for_status()
             new = 0
             for row in r.json():
-                rec = normalise_airnow(row)
+                try:
+                    rec = normalise_airnow(row)
+                except (KeyError, TypeError):
+                    log.warning("AirNow: skipped a malformed row")
+                    continue
                 if seen.add((rec["site_id"], rec["parameter"], rec["ts"])):
                     sink.send(TOPIC_AIRNOW, str(rec["site_id"]), rec)
                     new += 1

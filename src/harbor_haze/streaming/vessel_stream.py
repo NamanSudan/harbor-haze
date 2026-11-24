@@ -1,7 +1,8 @@
 """Spark Structured Streaming: live AIS positions (Kafka) -> hourly vessel features per grid cell.
 
-Reads `ais.positions`, joins the vessel type from the vessel registry (built from historical AIS
-plus live static messages), aggregates with the same `vessel_hourly` function used in batch, and
+Reads `ais.positions`, joins the vessel type from the vessel registry (historical AIS plus the live
+`ais.static` messages in bronze; `make registry` refreshes it and the stream loads it at start),
+drops repeated reports, aggregates with the same `vessel_hourly` function used in batch, and
 writes:
 
 * lake/stream/vessel_hourly (Parquet, append): each hour once, after the watermark closes it (final values)
@@ -14,6 +15,7 @@ from __future__ import annotations
 import argparse
 import os
 
+from pyspark.sql import DataFrame
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
 
@@ -34,6 +36,18 @@ POSITION = T.StructType(
     ]
 )
 REGISTRY = LAKE / "raw" / "vessel_registry"
+
+
+def live_hourly(positions: DataFrame, registry: DataFrame | None, watermark: str, grid_deg: float) -> DataFrame:
+    """Streaming positions (POSITION columns, ts as timestamp) -> hourly vessel features."""
+    # Stream-static join: vessel type is not in position reports.
+    if registry is not None:
+        positions = positions.join(F.broadcast(registry), "mmsi", "left")
+    else:
+        positions = positions.withColumn("vessel_type", F.lit(None).cast("int"))
+    # the same (mmsi, ts) can arrive from several receivers; batch drops these too
+    deduped = positions.withWatermark("ts", watermark).dropDuplicatesWithinWatermark(["mmsi", "ts"])
+    return vessel_hourly(deduped, grid_deg)
 
 
 def main() -> None:
@@ -59,16 +73,12 @@ def main() -> None:
         .withColumn("sog", F.when(F.col("sog").between(0, 60), F.col("sog")))
     )
 
-    # Stream-static join: vessel type is not in position reports.
+    registry = None
     if REGISTRY.exists():
         # Copy it into memory once: the batch job rewrites these files, and a lazy read would lose them mid-stream.
         rows = spark.read.parquet(str(REGISTRY)).select("mmsi", "vessel_type").collect()
         registry = spark.createDataFrame(rows, "mmsi long, vessel_type int")
-        positions = positions.join(F.broadcast(registry), "mmsi", "left")
-    else:
-        positions = positions.withColumn("vessel_type", F.lit(None).cast("int"))
-
-    hourly = vessel_hourly(positions.withWatermark("ts", a.watermark), cfg["study_area"]["grid_deg"])
+    hourly = live_hourly(positions, registry, a.watermark, cfg["study_area"]["grid_deg"])
     checkpoints = DATA_DIR / "checkpoints"
 
     to_lake = (

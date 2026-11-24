@@ -20,5 +20,5 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src ./src
 RUN uv sync --frozen --no-dev
 
-# pre-fetch the Spark Kafka connector so streaming jobs start offline
-RUN python -c "from harbor_haze.spark import get_spark; get_spark('warmup', kafka=True).stop()" || true
+# pre-fetch the Spark Kafka connector so streaming jobs start offline (fails the build if it can't)
+RUN python -c "from harbor_haze.spark import get_spark; get_spark('warmup', kafka=True).stop()"

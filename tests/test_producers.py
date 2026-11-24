@@ -89,8 +89,8 @@ def test_airnow_prefers_raw_concentration():
     }
     rec = normalise_airnow(row)
     assert rec["value"] == 12.5 and rec["ts"] == "2026-11-23T19:00:00Z" and rec["site_id"] == "06-037-4004"
-    row["RawConcentration"] = -999
-    assert normalise_airnow(row)["value"] == 10.0
+    row["RawConcentration"] = -999  # missing raw value: never fall back to the NowCast "Value"
+    assert normalise_airnow(row)["value"] is None
 
 
 def test_nws_reads_nested_values():
@@ -105,9 +105,15 @@ def test_nws_reads_nested_values():
     assert rec["temperature_c"] == 18.3 and rec["wind_direction_deg"] == 270 and rec["dew_point_c"] is None
 
 
-def test_airnow_bbox_surrounds_the_port():
-    min_lon, min_lat, max_lon, max_lat = map(float, airnow_bbox(load_config()).split(","))
-    assert min_lon < -118.245 < max_lon and min_lat < 33.735 < max_lat
+def test_airnow_bbox_covers_the_monitor_radius():
+    from harbor_haze.common import haversine_km
+
+    cfg = load_config()
+    c, km = cfg["study_area"]["center"], cfg["study_area"]["monitor_radius_km"]
+    min_lon, min_lat, max_lon, max_lat = map(float, airnow_bbox(cfg).split(","))
+    assert min_lon < c["lon"] < max_lon and min_lat < c["lat"] < max_lat
+    # east-west half-width must reach the full radius (km -> degrees needs cos(lat))
+    assert haversine_km(c["lat"], c["lon"], c["lat"], max_lon) >= km - 0.5
 
 
 def test_seen_is_bounded():
