@@ -4,6 +4,7 @@ from harbor_haze.streaming.producers import (
     TOPIC_AIS_STATIC,
     Seen,
     airnow_bbox,
+    aqs_site_id,
     normalise_airnow,
     normalise_ais,
     normalise_nws,
@@ -58,6 +59,16 @@ def test_static_data_goes_to_its_own_topic():
     assert rec["vessel_type"] == 71 and rec["length"] == 250 and rec["vessel_name"] == "TEST SHIP"
 
 
+def test_subscription_confirmation_is_skipped():
+    assert normalise_ais({"MessageType": "SubscriptionConfirmation"}) is None
+
+
+def test_airnow_site_ids_match_epa_format():
+    assert aqs_site_id("840060374004") == "06-037-4004"
+    assert aqs_site_id("060371302") == "06-037-1302"
+    assert aqs_site_id(None) is None
+
+
 def test_unknown_message_types_are_dropped():
     assert normalise_ais({"MessageType": "Interrogation", "MetaData": {"MMSI": 1}, "Message": {}}) is None
 
@@ -77,7 +88,7 @@ def test_airnow_prefers_raw_concentration():
         "FullAQSCode": "840060374004",
     }
     rec = normalise_airnow(row)
-    assert rec["value"] == 12.5 and rec["ts"] == "2026-11-23T19:00:00Z" and rec["site_id"] == "840060374004"
+    assert rec["value"] == 12.5 and rec["ts"] == "2026-11-23T19:00:00Z" and rec["site_id"] == "06-037-4004"
     row["RawConcentration"] = -999
     assert normalise_airnow(row)["value"] == 10.0
 

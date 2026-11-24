@@ -142,12 +142,13 @@ async def run_aisstream(cfg: dict, sink: Sink) -> None:
     backoff = 1
     while True:
         try:
-            async with websockets.connect(cfg["live"]["aisstream"]["url"], ping_interval=20) as ws:
+            # the AISStream handshake can take 20+ s; the library default (10 s) times out
+            async with websockets.connect(cfg["live"]["aisstream"]["url"], ping_interval=20, open_timeout=90) as ws:
                 await ws.send(json.dumps(sub))  # must arrive within 3 s of connecting
                 log.info("AISStream connected; subscribed to the study bbox")
                 backoff = 1
                 last = time.monotonic()
-                async for raw in ws:
+                async for raw in ws:  # frames arrive as bytes; the first one is a SubscriptionConfirmation
                     out = normalise_ais(json.loads(raw))
                     if out:
                         topic, rec = out
@@ -155,7 +156,7 @@ async def run_aisstream(cfg: dict, sink: Sink) -> None:
                     if time.monotonic() - last > 60:
                         log.info("AISStream: %d messages sent so far", sink.sent)
                         last = time.monotonic()
-        except (OSError, websockets.WebSocketException) as e:
+        except (OSError, TimeoutError, websockets.WebSocketException) as e:
             log.warning("AISStream disconnected (%s); reconnecting in %ss", e, backoff)
             await asyncio.sleep(backoff)
             backoff = min(backoff * 2, 60)
@@ -169,9 +170,19 @@ def airnow_bbox(cfg: dict) -> str:
     return f"{c['lon'] - r:.3f},{c['lat'] - r:.3f},{c['lon'] + r:.3f},{c['lat'] + r:.3f}"
 
 
+def aqs_site_id(code: str | None) -> str | None:
+    """AirNow's '840060374009' / '060374009' -> EPA AQS style '06-037-4009' (joins with the EPA history)."""
+    if not code:
+        return None
+    code = str(code)
+    if len(code) == 12 and code.startswith("840"):
+        code = code[3:]
+    return f"{code[:2]}-{code[2:5]}-{code[5:]}" if len(code) == 9 and code.isdigit() else code
+
+
 def normalise_airnow(row: dict) -> dict:
     return {
-        "site_id": row.get("FullAQSCode") or row.get("IntlAQSCode"),
+        "site_id": aqs_site_id(row.get("FullAQSCode") or row.get("IntlAQSCode")),
         "site_name": row.get("SiteName"),
         "lat": row.get("Latitude"),
         "lon": row.get("Longitude"),
