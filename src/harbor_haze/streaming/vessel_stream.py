@@ -2,7 +2,11 @@
 
 Reads `ais.positions`, joins the vessel type from the vessel registry (built from historical AIS
 plus live static messages), aggregates with the same `vessel_hourly` function used in batch, and
-writes finished hours to lake/stream/vessel_hourly (Parquet) and to the `features.vessel_hourly` topic.
+writes:
+
+* lake/stream/vessel_hourly (Parquet, append): each hour once, after the watermark closes it (final values)
+* `features.vessel_hourly` topic (update): the current hour's running values every trigger, for the live UI;
+  consumers keep the latest message per (cell, hour)
 """
 
 from __future__ import annotations
@@ -57,7 +61,9 @@ def main() -> None:
 
     # Stream-static join: vessel type is not in position reports.
     if REGISTRY.exists():
-        registry = spark.read.parquet(str(REGISTRY)).select("mmsi", "vessel_type")
+        # Copy it into memory once: the batch job rewrites these files, and a lazy read would lose them mid-stream.
+        rows = spark.read.parquet(str(REGISTRY)).select("mmsi", "vessel_type").collect()
+        registry = spark.createDataFrame(rows, "mmsi long, vessel_type int")
         positions = positions.join(F.broadcast(registry), "mmsi", "left")
     else:
         positions = positions.withColumn("vessel_type", F.lit(None).cast("int"))
@@ -78,11 +84,11 @@ def main() -> None:
             F.concat_ws(":", "cell_lat", "cell_lon").alias("key"),
             F.to_json(F.struct(*hourly.columns)).alias("value"),
         )
-        .writeStream.outputMode("append")
+        .writeStream.outputMode("update")
         .format("kafka")
         .option("kafka.bootstrap.servers", os.environ.get("KAFKA_BOOTSTRAP", "localhost:9094"))
         .option("topic", "features.vessel_hourly")
-        .option("checkpointLocation", str(checkpoints / "vessel_hourly_kafka"))
+        .option("checkpointLocation", str(checkpoints / "vessel_hourly_kafka_live"))
         .trigger(processingTime=a.trigger)
         .start()
     )
