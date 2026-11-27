@@ -44,23 +44,27 @@ Counting rules:
 - Counts are distinct vessels per cell-hour. **Don't sum them across cells**: a moving vessel is
   counted in every cell it crosses (summing cargo over cells overcounts by about 1.4x in 2021 and
   2x in 2024). For bay-wide counts use `features/bay_hourly`.
-- Counts use `approx_count_distinct` (it works in streaming too), so they can be off by one.
+- Counts use `approx_count_distinct` (it works in streaming too) with a 2% relative error setting
+  (`CELL_RSD` in `features.py`). Most cell-hours hold one or two vessels and are exact. Against an
+  exact recount of the full window, `n_vessels` is off in 0.4% of cell-hours (by up to 3) and the
+  cargo and tanker counts in under 0.02% (by 1).
 
 ## `features/bay_hourly` columns
 
 One row per hour for the whole study area: every column of `vessel_hourly` except `cell_lat` and
 `cell_lon`, with the same counting rules, plus `low_coverage`. Each vessel is counted once per hour,
-so there is no cross-cell overcount. Batch only. The counts are approximate in the same way: about
-1% relative error, which at 300+ vessels an hour can be a few vessels either way.
+so there is no cross-cell overcount. Batch only. The counts are approximate with a tighter setting
+(`BAY_RSD`, 1% relative error), which at 300+ vessels an hour can be a few vessels either way.
 
 | Column | Meaning |
 |---|---|
 | `hour_utc`, `n_*`, `mean_sog`, `mean_sog_underway` | As in `vessel_hourly`, for the whole bay |
 | `low_coverage` | `n_pings` is below `features.low_coverage_pings` in `config/sources.yaml` (default 2,000, about the 1st percentile of hourly pings) |
 
-- Every hour of every day in `raw/ais` has a row. Hours with no pings have `n_pings = 0`, zero
-  counts and null speeds. They are AIS outages, not empty water: filter on `low_coverage` before
-  using the counts, never read them as "no ships".
+- Every hour of every day of each window in `config/sources.yaml` that has at least one day in
+  `raw/ais` has a row, so a day that failed to load shows up as 24 empty hours instead of vanishing.
+  Hours with no pings have `n_pings = 0`, zero counts and null speeds. They are AIS outages, not
+  empty water: filter on `low_coverage` before using the counts, never read them as "no ships".
 
 ## `raw/ghcnh` wind fields
 

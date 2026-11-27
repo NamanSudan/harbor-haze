@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 import pytest
 
@@ -14,8 +14,8 @@ def spark():
     s.stop()
 
 
-def row(mmsi, minute, lat, lon, sog, status, vtype):
-    return (mmsi, datetime(2024, 9, 1, 10, minute), lat, lon, sog, 0.0, 0, status, vtype, 200.0, 10.0, "X", "test")
+def row(mmsi, minute, lat, lon, sog, status, vtype, hour=10):
+    return (mmsi, datetime(2024, 9, 1, hour, minute), lat, lon, sog, 0.0, 0, status, vtype, 200.0, 10.0, "X", "test")
 
 
 def test_vessel_hourly_counts_by_cell_and_class(spark):
@@ -73,10 +73,12 @@ def test_cargo_tanker_anchored_means_status_1_only(spark):
         row(2, 0, 33.742, -118.242, 0.0, 5, 72),  # cargo moored at a berth: stationary, not anchored
         row(3, 0, 33.743, -118.243, 0.0, 1, 52),  # tug at anchor: not cargo or tanker
         row(4, 0, 33.744, -118.244, 11.0, 0, 84),  # tanker underway
+        row(5, 0, 33.745, -118.245, 0.0, 1, 60),  # passenger ship at anchor: not cargo or tanker
+        row(6, 0, 33.746, -118.246, 0.0, 1, 90),  # "other" type at anchor: not cargo or tanker
     ]
     r = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()[0]
     assert (r.n_cargo_tanker, r.n_cargo_tanker_stationary, r.n_cargo_tanker_anchored) == (3, 2, 1)
-    assert (r.n_vessels, r.n_tug) == (4, 1)
+    assert (r.n_vessels, r.n_tug, r.n_passenger) == (6, 1, 1)
 
 
 def test_ship_crossing_two_cells_counts_once_bay_wide(spark):
@@ -116,12 +118,30 @@ def test_batch_bay_table_fills_empty_hours(spark):
     from harbor_haze.ingestion.vessel_batch import bay_hourly_full
 
     rows = [row(1, m, 33.741, -118.241, 0.0, 1, 71) for m in range(3)] + [row(2, 0, 33.741, -118.241, 9.0, 0, 70)]
-    ais = spark.createDataFrame(rows, AIS_SCHEMA).withColumn("date", F.to_date("ts"))
-    out = sorted(bay_hourly_full(ais, low_coverage_pings=2).collect(), key=lambda r: r.hour_utc)
-    assert len(out) == 24
-    assert [r.hour_utc.hour for r in out] == list(range(24))
+    at_noon = [row(3, m, 33.741, -118.241, 5.0, 0, 70, hour=12) for m in (0, 1)]
+    ais = spark.createDataFrame(rows + at_noon, AIS_SCHEMA).withColumn("date", F.to_date("ts"))
+    days = [date(2024, 9, 1), date(2024, 9, 2)]  # 09-02 has no pings at all (a failed day)
+    out = sorted(bay_hourly_full(ais, low_coverage_pings=2, days=days).collect(), key=lambda r: r.hour_utc)
+    assert len(out) == 48
+    assert [r.hour_utc.hour for r in out] == list(range(24)) * 2
     busy = out[10]
     assert (busy.n_pings, busy.n_vessels, busy.n_cargo_tanker_anchored, busy.low_coverage) == (4, 2, 1, False)
+    assert (out[12].n_pings, out[12].low_coverage) == (2, False)  # exactly at the threshold: not low coverage
     empty = out[3]
     assert (empty.n_pings, empty.n_vessels, empty.n_cargo_tanker, empty.low_coverage) == (0, 0, 0, True)
     assert empty.mean_sog is None
+    missing_day = out[24:]
+    assert all(r.n_pings == 0 and r.low_coverage for r in missing_day)
+
+
+def test_spine_covers_loaded_windows_including_failed_days():
+    from harbor_haze.ingestion.vessel_batch import spine_days
+
+    cfg = {
+        "windows": {
+            "a": [{"start": "2024-09-01", "end": "2024-09-03"}],
+            "b": [{"start": "2025-01-01", "end": "2025-01-02"}],  # nothing loaded: left out
+        }
+    }
+    loaded = {date(2024, 9, 1), date(2024, 9, 3), date(2023, 5, 5)}  # 09-02 failed; 2023-05-05 is outside any window
+    assert spine_days(cfg, loaded) == [date(2023, 5, 5), date(2024, 9, 1), date(2024, 9, 2), date(2024, 9, 3)]

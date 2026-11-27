@@ -72,6 +72,75 @@ def test_merge_existing_with_a_new_column(tmp_path):
     }
 
 
+def test_weather_rerun_over_a_file_from_before_wind_calm(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from harbor_haze.ingestion import ghcnh
+
+    station, cols = "USW00000001", ["wind_direction", "wind_speed"]
+    cache, out = tmp_path / "cache", tmp_path / "out"
+    cache.mkdir()
+    # source file: strings, as NOAA ships them; two days
+    pq.write_table(
+        pa.table(
+            {
+                "STATION": [station] * 3,
+                "Station_name": ["X"] * 3,
+                "DATE": ["2024-09-01T00:00:00", "2024-09-01T01:00:00", "2024-09-02T00:00:00"],
+                "LATITUDE": [33.8] * 3,
+                "LONGITUDE": [-118.1] * 3,
+                "wind_direction": ["999", "250", "999"],
+                "wind_speed": ["0.0", "3.1", "1.5"],
+            }
+        ),
+        cache / f"GHCNh_{station}_2024.parquet",
+    )
+    cfg = {
+        "windows": {"d1": [{"start": "2024-09-01", "end": "2024-09-01"}]},
+        "sources": {
+            "ghcnh": {"url": "https://x/GHCNh_{station}_{year}.parquet", "stations": {station: "X"}, "columns": cols}
+        },
+    }
+    monkeypatch.setattr(ghcnh, "CACHE", cache)
+    monkeypatch.setattr(ghcnh, "OUT", out)
+    monkeypatch.setattr(ghcnh, "load_config", lambda: cfg)
+    monkeypatch.setattr(ghcnh, "download", lambda url, path: path.stat().st_size)
+    monkeypatch.setattr(ghcnh, "record", lambda *a, **k: None)
+
+    # lake file written by the loader before this change: no wind_calm, raw 999, and a day outside the window
+    dest = out / f"station={station}" / "year=2024"
+    dest.mkdir(parents=True)
+    old = pa.table(
+        {
+            "Station_name": ["X", "X"],
+            "DATE": ["2024-08-31T23:00:00", "2024-09-01T00:00:00"],
+            "LATITUDE": [33.8, 33.8],
+            "LONGITUDE": [-118.1, -118.1],
+            "wind_direction": [999.0, 999.0],
+            "wind_speed": [0.0, 0.0],
+            "ts_utc": pa.array([1725145200, 1725148800], pa.timestamp("s")),
+        }
+    )
+    pq.write_table(old, dest / "part-0.parquet")
+
+    ghcnh.run("d1")
+    first = pq.read_table(dest / "part-0.parquet")
+    assert first.column_names[-1] == "wind_calm"
+    assert first["DATE"].to_pylist() == ["2024-08-31T23:00:00", "2024-09-01T00:00:00", "2024-09-01T01:00:00"]
+    assert first["wind_direction"].to_pylist() == [None, None, 250.0]
+    assert first["wind_calm"].to_pylist() == [True, True, False]
+
+    # second run: the file now has wind_calm and the new rows do not (they are cleaned after the merge)
+    cfg["windows"]["d2"] = [{"start": "2024-09-02", "end": "2024-09-02"}]
+    ghcnh.run("d2")
+    second = pq.read_table(dest / "part-0.parquet")
+    assert second.schema.equals(first.schema)
+    assert second.num_rows == 4
+    assert second["wind_direction"].to_pylist() == [None, None, 250.0, None]
+    assert second["wind_calm"].to_pylist() == [True, True, False, False]
+
+
 def test_done_checks_the_partition_data(tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
