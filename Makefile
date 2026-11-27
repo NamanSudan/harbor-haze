@@ -26,7 +26,7 @@ env: ## create .env from .env.example (never overwrites)
 	@test -f .env && echo ".env exists, leaving it alone" || (cp .env.example .env && echo "created .env; add your API keys")
 
 # --- historical ingestion (batch) ----------------------------------------------------------
-.PHONY: ingest ingest-ais ingest-epa ingest-weather ingest-smoke vessel-features lake-summary
+.PHONY: ingest ingest-ais ingest-epa ingest-weather ingest-smoke vessel-features registry lake-summary
 ingest: ingest-epa ingest-weather ingest-smoke ingest-ais vessel-features ## every historical source for WINDOW (dev|full)
 
 ingest-ais: ## NOAA MarineCadastre AIS -> lake/raw/ais (Spark)
@@ -43,6 +43,9 @@ ingest-smoke: ## NOAA HMS smoke polygons -> lake/raw/hms_smoke
 
 vessel-features: ## lake/raw/ais -> lake/features/vessel_hourly + vessel registry (Spark)
 	$(PY) -m harbor_haze.ingestion.vessel_batch
+
+registry: ## refresh the vessel registry (history + live ais.static); restart stream-vessels to pick it up
+	$(PY) -m harbor_haze.ingestion.vessel_batch --registry-only
 
 lake-summary: ## row counts per lake table + bytes downloaded
 	$(PY) -m harbor_haze.lake_summary
