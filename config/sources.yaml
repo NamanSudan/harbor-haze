@@ -15,7 +15,8 @@ study_area:
 # Historical windows (inclusive). Two seasons on purpose: fall 2021 is the peak of the
 # anchorage queue; fall 2024 is after ships were held offshore. Same months both years.
 windows:
-  dev:
+  dev:                          # small: one day per AIS file format
+    - {start: 2021-10-01, end: 2021-10-01}
     - {start: 2024-09-01, end: 2024-09-02}
   full:
     - {start: 2021-09-01, end: 2021-11-30}
