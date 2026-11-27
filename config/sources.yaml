@@ -12,6 +12,11 @@ study_area:
   # Hourly grid used to aggregate vessel activity (degrees; 0.02 deg is about 2 km)
   grid_deg: 0.02
 
+features:
+  # Bay-wide hours with fewer AIS pings than this are flagged low_coverage (source gaps, not empty
+  # water). 2,000 is about the 1st percentile of hourly pings in the full window.
+  low_coverage_pings: 2000
+
 # Historical windows (inclusive). Two seasons on purpose: fall 2021 is the peak of the
 # anchorage queue; fall 2024 is after ships were held offshore. Same months both years.
 windows:

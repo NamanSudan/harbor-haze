@@ -1,4 +1,4 @@
-"""Vessel-activity features per grid cell and hour.
+"""Vessel-activity features per hour, per grid cell and for the whole bay.
 
 The same function runs on the historical AIS (batch) and on the live AISStream topic
 (Structured Streaming), so the model sees identical features in training and serving.
@@ -31,7 +31,15 @@ AIS_SCHEMA = T.StructType(
 
 # AIS navigational status codes: 1 = at anchor, 5 = moored
 STATIONARY_STATUS = (1, 5)
+ANCHORED_STATUS = 1
 STATIONARY_SOG_KNOTS = 0.5
+
+# Relative error of the distinct-vessel counts. Spark's sketch has a fixed size per group whatever the count
+# (about 13 KB at 0.01, 3 KB at 0.02), and every count column carries one. Most cell-hours hold a single
+# vessel, so the cell table has hundreds of thousands of groups and needs the smaller sketch to fit in memory;
+# the bay table has one group per hour and keeps the tighter one.
+CELL_RSD = 0.02
+BAY_RSD = 0.01
 
 
 def vessel_class(vessel_type: Column) -> Column:
@@ -58,9 +66,40 @@ def with_grid(df: DataFrame, grid_deg: float) -> DataFrame:
     )
 
 
-def _distinct_vessels(cond: Column) -> Column:
+def _distinct_vessels(cond: Column, rsd: float) -> Column:
     # approx_count_distinct works in both batch and streaming aggregations (exact distinct does not stream)
-    return F.approx_count_distinct(F.when(cond, F.col("mmsi")), rsd=0.01)
+    return F.approx_count_distinct(F.when(cond, F.col("mmsi")), rsd=rsd)
+
+
+def _vessel_aggregates(df: DataFrame, *keys: str, rsd: float) -> DataFrame:
+    """Per-hour vessel counts grouped by the hour plus ``keys``. Shared by the cell and bay-wide tables."""
+    # coalesce: a ping with unknown speed and an "underway" status would otherwise be null and count as neither
+    stationary = F.coalesce(
+        F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS), F.lit(False)
+    )
+    anchored = F.coalesce(F.col("status") == ANCHORED_STATUS, F.lit(False))
+    cls = vessel_class(F.col("vessel_type"))
+    cargo_tanker = cls.isin("cargo", "tanker")
+    return (
+        df.groupBy(F.window("ts", "1 hour").alias("w"), *keys)
+        .agg(
+            F.count(F.lit(1)).alias("n_pings"),
+            _distinct_vessels(F.lit(True), rsd).alias("n_vessels"),
+            _distinct_vessels(stationary, rsd).alias("n_stationary"),
+            _distinct_vessels(~stationary, rsd).alias("n_underway"),
+            _distinct_vessels(cls == "cargo", rsd).alias("n_cargo"),
+            _distinct_vessels(cls == "tanker", rsd).alias("n_tanker"),
+            _distinct_vessels(cls == "passenger", rsd).alias("n_passenger"),
+            _distinct_vessels(cls == "tug", rsd).alias("n_tug"),
+            F.avg("sog").alias("mean_sog"),
+            F.avg(F.when(~stationary, F.col("sog"))).alias("mean_sog_underway"),
+            _distinct_vessels(cargo_tanker, rsd).alias("n_cargo_tanker"),
+            _distinct_vessels(cargo_tanker & stationary, rsd).alias("n_cargo_tanker_stationary"),
+            _distinct_vessels(cargo_tanker & anchored, rsd).alias("n_cargo_tanker_anchored"),
+        )
+        .withColumn("hour_utc", F.col("w.start"))
+        .drop("w")
+    )
 
 
 def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
@@ -74,34 +113,26 @@ def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
       ``n_stationary + n_underway >= n_vessels``. Exclusive counts can be derived:
       stationary only = ``n_vessels - n_underway``, underway only = ``n_vessels - n_stationary``,
       both = ``n_stationary + n_underway - n_vessels``.
+    - ``n_cargo_tanker*`` use the same any-ping rule. Anchored means at least one ping with
+      status 1 (at anchor); status 5 (moored at a berth) is left out on purpose, because many
+      ships at a berth run on shore power.
     - Counts are distinct vessels per cell-hour. Do not sum them across cells: a moving vessel
-      is counted in every cell it crosses.
-    - Counts use ``approx_count_distinct`` (needed for streaming), so they can be off by one.
+      is counted in every cell it crosses. Use ``bay_hourly`` for bay-wide counts.
+    - Counts use ``approx_count_distinct`` (needed for streaming) with ``CELL_RSD``. Most cell-hours are
+      exact; under 0.5% are off, by up to 3.
 
     The categories are not made mutually exclusive here because that needs a per-vessel
     aggregation before the per-cell one, and the streaming job runs this same function in
     update mode, where Spark does not support chained aggregations.
     """
-    # coalesce: a ping with unknown speed and an "underway" status would otherwise be null and count as neither
-    stationary = F.coalesce(
-        F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS), F.lit(False)
-    )
-    cls = vessel_class(F.col("vessel_type"))
-    df = with_grid(positions, grid_deg)
-    return (
-        df.groupBy(F.window("ts", "1 hour").alias("w"), "cell_lat", "cell_lon")
-        .agg(
-            F.count(F.lit(1)).alias("n_pings"),
-            _distinct_vessels(F.lit(True)).alias("n_vessels"),
-            _distinct_vessels(stationary).alias("n_stationary"),
-            _distinct_vessels(~stationary).alias("n_underway"),
-            _distinct_vessels(cls == "cargo").alias("n_cargo"),
-            _distinct_vessels(cls == "tanker").alias("n_tanker"),
-            _distinct_vessels(cls == "passenger").alias("n_passenger"),
-            _distinct_vessels(cls == "tug").alias("n_tug"),
-            F.avg("sog").alias("mean_sog"),
-            F.avg(F.when(~stationary, F.col("sog"))).alias("mean_sog_underway"),
-        )
-        .withColumn("hour_utc", F.col("w.start"))
-        .drop("w")
-    )
+    return _vessel_aggregates(with_grid(positions, grid_deg), "cell_lat", "cell_lon", rsd=CELL_RSD)
+
+
+def bay_hourly(positions: DataFrame) -> DataFrame:
+    """Aggregate positions to one row per hour for the whole study area.
+
+    Same columns and rules as ``vessel_hourly`` without the cell columns. Each vessel is
+    counted once per hour, so these counts have no cross-cell overcount. Counts use ``BAY_RSD``
+    (about 1% relative error). Hours without pings produce no row here; the batch job adds them.
+    """
+    return _vessel_aggregates(positions, rsd=BAY_RSD)

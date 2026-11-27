@@ -1,21 +1,57 @@
 """Batch side of the vessel features: historical AIS in the lake -> hourly features + vessel registry.
 
 * lake/features/vessel_hourly  same columns as the streaming job's output (shared `vessel_hourly`)
+* lake/features/bay_hourly     the same counts for the whole bay, one row for every hour of each loaded window
 * lake/raw/vessel_registry      latest known type/size per MMSI, used by the stream-static join
 """
 
 from __future__ import annotations
 
 import argparse
+from datetime import date
 
 from pyspark.sql import Window
 from pyspark.sql import functions as F
 
-from harbor_haze.common import LAKE, load_config, log, record, setup_logging
-from harbor_haze.features import vessel_hourly
+from harbor_haze.common import LAKE, load_config, log, record, setup_logging, window_days
+from harbor_haze.features import bay_hourly, vessel_hourly
 from harbor_haze.spark import get_spark
 
 AIS = LAKE / "raw" / "ais"
+
+
+def spine_days(cfg: dict, ais_days: set[date]) -> list[date]:
+    """Every day of each loaded configured window, plus any AIS day outside all windows.
+
+    Windows are tried smallest first, and a window counts as loaded only if it holds AIS days that the
+    windows already taken do not cover. So a dev load (inside the full window) does not pull in the full
+    window, while a day that failed to load inside a loaded window still gets its hours (as low coverage).
+    """
+    windows = sorted((set(window_days(cfg, name)) for name in cfg["windows"]), key=len)
+    days: set[date] = set()
+    for window in windows:
+        if (window & ais_days) - days:
+            days |= window
+    return sorted(days | ais_days)
+
+
+def bay_hourly_full(ais, low_coverage_pings: int, days: list[date]):
+    """Bay-wide counts for every hour of `days`: hours without pings get zero counts.
+
+    `low_coverage` flags hours with fewer pings than the threshold (AIS gaps, not empty water).
+    """
+    day = F.to_timestamp("date")
+    hours = ais.sparkSession.createDataFrame([(d,) for d in days], "date date").select(
+        F.explode(F.sequence(day, day + F.expr("INTERVAL 23 HOURS"), F.expr("INTERVAL 1 HOUR"))).alias("hour_utc")
+    )
+    counts = bay_hourly(ais)
+    zero = {c: 0 for c in counts.columns if c.startswith("n_")}
+    return (
+        hours.join(counts, "hour_utc", "left")
+        .fillna(zero)
+        .withColumn("low_coverage", F.col("n_pings") < low_coverage_pings)
+        .select(*counts.columns, "low_coverage")
+    )
 
 
 def main() -> None:
@@ -30,6 +66,12 @@ def main() -> None:
         str(LAKE / "features" / "vessel_hourly")
     )
 
+    ais_days = {r.date for r in ais.select("date").distinct().collect()}
+    bay = bay_hourly_full(ais, cfg["features"]["low_coverage_pings"], spine_days(cfg, ais_days))
+    bay.repartition(1).sortWithinPartitions("hour_utc").write.mode("overwrite").parquet(
+        str(LAKE / "features" / "bay_hourly")
+    )
+
     latest = Window.partitionBy("mmsi").orderBy(F.col("ts").desc())
     registry = (
         ais.where(F.col("vessel_type").isNotNull() & (F.col("vessel_type") > 0))
@@ -41,8 +83,14 @@ def main() -> None:
 
     n_hours = spark.read.parquet(str(LAKE / "features" / "vessel_hourly")).count()
     n_vessels = spark.read.parquet(str(LAKE / "raw" / "vessel_registry")).count()
-    log.info("vessel features: %s cell-hours; registry: %s vessels", f"{n_hours:,}", f"{n_vessels:,}")
-    record("vessel_batch", cell_hours=n_hours, registry_vessels=n_vessels)
+    n_bay = spark.read.parquet(str(LAKE / "features" / "bay_hourly")).count()
+    log.info(
+        "vessel features: %s cell-hours, %s bay hours; registry: %s vessels",
+        f"{n_hours:,}",
+        f"{n_bay:,}",
+        f"{n_vessels:,}",
+    )
+    record("vessel_batch", cell_hours=n_hours, bay_hours=n_bay, registry_vessels=n_vessels)
     spark.stop()
 
 
