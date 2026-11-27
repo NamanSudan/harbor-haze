@@ -4,4 +4,5 @@ import os
 import time
 
 os.environ["TZ"] = "UTC"
-time.tzset()
+if hasattr(time, "tzset"):  # not available on Windows
+    time.tzset()
