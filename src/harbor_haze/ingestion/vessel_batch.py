@@ -1,7 +1,7 @@
 """Batch side of the vessel features: historical AIS in the lake -> hourly features + vessel registry.
 
 * lake/features/vessel_hourly  same columns as the streaming job's output (shared `vessel_hourly`)
-* lake/features/bay_hourly     the same counts for the whole bay, one row for every hour of every AIS day
+* lake/features/bay_hourly     the same counts for the whole bay, one row for every hour of each loaded window
 * lake/raw/vessel_registry      latest known type/size per MMSI, used by the stream-static join
 """
 
@@ -21,16 +21,18 @@ AIS = LAKE / "raw" / "ais"
 
 
 def spine_days(cfg: dict, ais_days: set[date]) -> list[date]:
-    """Every day of each configured window that has at least one day in raw/ais, plus any other AIS day.
+    """Every day of each loaded configured window, plus any AIS day outside all windows.
 
-    A day that failed to load inside a loaded window still gets its hours (as low coverage).
+    Windows are tried smallest first, and a window counts as loaded only if it holds AIS days that the
+    windows already taken do not cover. So a dev load (inside the full window) does not pull in the full
+    window, while a day that failed to load inside a loaded window still gets its hours (as low coverage).
     """
-    days = set(ais_days)
-    for name in cfg["windows"]:
-        window = set(window_days(cfg, name))
-        if window & ais_days:
+    windows = sorted((set(window_days(cfg, name)) for name in cfg["windows"]), key=len)
+    days: set[date] = set()
+    for window in windows:
+        if (window & ais_days) - days:
             days |= window
-    return sorted(days)
+    return sorted(days | ais_days)
 
 
 def bay_hourly_full(ais, low_coverage_pings: int, days: list[date]):

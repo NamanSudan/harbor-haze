@@ -134,6 +134,22 @@ def test_batch_bay_table_fills_empty_hours(spark):
     assert all(r.n_pings == 0 and r.low_coverage for r in missing_day)
 
 
+def test_spine_does_not_pull_in_a_larger_window_from_a_nested_one():
+    from harbor_haze.ingestion.vessel_batch import spine_days
+
+    cfg = {
+        "windows": {
+            "full": [{"start": "2024-09-01", "end": "2024-09-30"}],
+            "dev": [{"start": "2024-09-01", "end": "2024-09-02"}],  # inside full
+        }
+    }
+    dev = [date(2024, 9, 1), date(2024, 9, 2)]
+    assert spine_days(cfg, set(dev)) == dev  # dev load only: no fake outages for the rest of September
+    assert spine_days(cfg, {date(2024, 9, 1)}) == dev  # a failed dev day still shows up
+    full = spine_days(cfg, set(dev) | {date(2024, 9, 20)})  # full load with a failed 09-21
+    assert len(full) == 30 and date(2024, 9, 21) in full
+
+
 def test_spine_covers_loaded_windows_including_failed_days():
     from harbor_haze.ingestion.vessel_batch import spine_days
 

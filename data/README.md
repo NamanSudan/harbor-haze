@@ -2,6 +2,9 @@
 
 Nothing here is committed except this file. Everything is rebuilt by `make ingest`.
 
+`make vessel-features` (Spark) needs about 6 GB of free RAM (`SPARK_DRIVER_MEMORY=6g` in `.env`). On a
+smaller machine, lower it and use fewer cores, e.g. `SPARK_MASTER=local[4]` (not tested below 6g).
+
 | Path | Contents |
 |---|---|
 | `lake/raw/ais/date=YYYY-MM-DD/` | Vessel positions in the study bbox (canonical schema in `src/harbor_haze/features.py`) |
