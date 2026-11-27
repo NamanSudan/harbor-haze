@@ -1,6 +1,6 @@
 owner      = "your-github-username"
 repo_name  = "harbor-haze"
-visibility = "private"
+visibility = "public"
 
 collaborators = {
   "teammate-one" = "push"

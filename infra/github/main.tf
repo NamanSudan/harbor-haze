@@ -42,13 +42,13 @@ resource "github_branch_default" "default" {
   branch     = github_branch.dev.branch
 }
 
-# GitHub only enforces branch protection on private repos with a paid plan (Pro / Team). Until then the same
-# rules are enforced by .github/workflows/ci.yml (branch-policy job) and the pre-commit/pre-push hooks.
+# GitHub enforces branch protection on public repos (private ones need Pro / Team). CI (branch-policy) and the
+# pre-commit/pre-push hooks enforce the same flow on top of it.
 resource "github_branch_protection" "protected" {
   for_each       = var.enable_branch_protection ? toset(var.protected_branches) : toset([])
   repository_id  = github_repository.repo.node_id
   pattern        = each.key
-  enforce_admins = true
+  enforce_admins = var.enforce_for_admins
 
   required_pull_request_reviews {
     required_approving_review_count = var.required_approvals
@@ -56,7 +56,7 @@ resource "github_branch_protection" "protected" {
   }
 
   required_status_checks {
-    strict   = true
+    strict   = false
     contexts = var.required_checks
   }
 
