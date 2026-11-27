@@ -1,23 +1,60 @@
-# Pull-request gates. These job names are the required status checks on main
+# Pull-request gates. These job names are the required status checks on main and dev
 # (infra/github/variables.tf -> required_checks); rename them in both places.
 name: ci
 on:
   pull_request:
   push:
-    branches: [main]
+    branches: [main, dev]
 
 permissions:
   contents: read
+  pull-requests: read
 
 concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
+  # Branch flow: feature branch -> PR into dev -> PR from dev into main. Every commit on dev/main
+  # must come from a merged PR. (Also enforced by GitHub branch protection when the plan allows it.)
+  branch-policy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PRs follow feature -> dev -> main
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.base_ref }}
+          HEAD: ${{ github.head_ref }}
+        run: |
+          echo "PR: $HEAD -> $BASE"
+          if [ "$BASE" = "main" ] && [ "$HEAD" != "dev" ]; then
+            echo "::error::Only dev can be merged into main. Open your PR against dev."; exit 1
+          fi
+          if [ "$BASE" = "dev" ] && [ "$HEAD" = "main" ]; then
+            echo "::error::main is never merged back into dev."; exit 1
+          fi
+      - name: commits on dev/main come from merged PRs
+        if: github.event_name == 'push'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          # A PR merge makes the branch tip exactly that PR's merge commit, and the PR's base is this branch.
+          # A direct push (even of commits that were reviewed elsewhere) does not.
+          ok=$(gh api "repos/${{ github.repository }}/commits/$SHA/pulls" --jq \
+               "[.[] | select(.merged_at != null and .base.ref == \"$BRANCH\" and .merge_commit_sha == \"$SHA\")] | length")
+          if [ "$ok" = "0" ]; then
+            echo "::error::$SHA on $BRANCH is not the merge of a pull request into $BRANCH (direct push?)"; exit 1
+          fi
+          echo "ok: $SHA is a PR merge into $BRANCH"
+
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history for the secret scan
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -31,10 +68,8 @@ jobs:
         run: uv run ruff check src tests && uv run ruff format --check src tests
       - name: unit tests (Spark local mode, no network)
         run: uv run pytest -q
-      - name: secret scan
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: secret scan (whole git history)
+        run: docker run --rm -v "$PWD:/repo" zricethezav/gitleaks:v8.28.0 git /repo --redact -v
 
   docker-build:
     runs-on: ubuntu-latest

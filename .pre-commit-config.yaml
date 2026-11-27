@@ -1,8 +1,21 @@
-# Local gates on every commit: `make setup` installs them.
+# Local gates on every commit and push: `make setup` installs them.
+default_install_hook_types: [pre-commit, pre-push]
+default_stages: [pre-commit]
 repos:
+  - repo: local
+    hooks:
+      - id: no-push-to-protected
+        name: never push straight to main or dev (open a PR)
+        language: system
+        entry: bash -c 'case "$PRE_COMMIT_REMOTE_BRANCH" in refs/heads/main|refs/heads/dev) echo "Push a feature branch and open a PR into dev instead."; exit 1;; esac'
+        stages: [pre-push]
+        always_run: true
+        pass_filenames: false
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v6.0.0
     hooks:
+      - id: no-commit-to-branch
+        args: [--branch, main, --branch, dev]
       - id: check-yaml
       - id: check-toml
       - id: end-of-file-fixer

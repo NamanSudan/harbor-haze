@@ -10,7 +10,9 @@ resource "github_repository" "repo" {
   has_projects = true
   has_wiki     = false
 
-  allow_merge_commit     = false
+  # feature -> dev: squash (one commit per PR). dev -> main: merge commit, so dev and main keep a shared
+  # history and the next promotion only shows new work.
+  allow_merge_commit     = true
   allow_squash_merge     = true
   allow_rebase_merge     = false
   delete_branch_on_merge = true
@@ -27,10 +29,26 @@ resource "github_repository_collaborator" "member" {
   permission = each.value
 }
 
-resource "github_branch_protection" "main" {
+# dev = integration and testing, main = the deliverable. New work branches off dev and lands
+# through a PR; dev is promoted to main through a PR.
+resource "github_branch" "dev" {
+  repository    = github_repository.repo.name
+  branch        = "dev"
+  source_branch = "main"
+}
+
+resource "github_branch_default" "default" {
+  repository = github_repository.repo.name
+  branch     = github_branch.dev.branch
+}
+
+# GitHub enforces branch protection on public repos (private ones need Pro / Team). CI (branch-policy) and the
+# pre-commit/pre-push hooks enforce the same flow on top of it.
+resource "github_branch_protection" "protected" {
+  for_each       = var.enable_branch_protection ? toset(var.protected_branches) : toset([])
   repository_id  = github_repository.repo.node_id
-  pattern        = "main"
-  enforce_admins = true
+  pattern        = each.key
+  enforce_admins = var.enforce_for_admins
 
   required_pull_request_reviews {
     required_approving_review_count = var.required_approvals
@@ -38,13 +56,12 @@ resource "github_branch_protection" "main" {
   }
 
   required_status_checks {
-    strict   = true
+    strict   = false
     contexts = var.required_checks
   }
 
-  required_linear_history = true
-  allows_force_pushes     = false
-  allows_deletions        = false
+  allows_force_pushes = false
+  allows_deletions    = false
 }
 
 resource "github_issue_label" "label" {

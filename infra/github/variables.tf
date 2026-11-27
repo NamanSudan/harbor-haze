@@ -10,7 +10,7 @@ variable "repo_name" {
 
 variable "visibility" {
   type    = string
-  default = "private"
+  default = "public"
   validation {
     condition     = contains(["private", "public"], var.visibility)
     error_message = "visibility must be private or public"
@@ -26,7 +26,7 @@ variable "collaborators" {
 variable "required_checks" {
   description = "CI job names that must pass before a PR can merge"
   type        = list(string)
-  default     = ["lint-and-test", "docker-build", "terraform"]
+  default     = ["branch-policy", "lint-and-test", "docker-build", "terraform"]
 }
 
 variable "required_approvals" {
@@ -47,4 +47,21 @@ variable "labels" {
     "data-quality"    = "d93f0b"
     "report"          = "bfdadc"
   }
+}
+
+variable "protected_branches" {
+  type    = list(string)
+  default = ["main", "dev"]
+}
+
+variable "enable_branch_protection" {
+  description = "Free on public repos; a private repo needs GitHub Pro/Team"
+  type        = bool
+  default     = true
+}
+
+variable "enforce_for_admins" {
+  description = "Apply the rules to repo admins too (false lets the owner merge without waiting)"
+  type        = bool
+  default     = false
 }
