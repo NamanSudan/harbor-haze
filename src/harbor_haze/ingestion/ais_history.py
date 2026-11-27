@@ -3,7 +3,8 @@
 Each day's national file is downloaded, read by Spark, cut to the study bounding box,
 normalised to the canonical schema and written to lake/raw/ais/date=YYYY-MM-DD.
 The national file is deleted after its batch, so disk use stays bounded.
-Reruns skip days that are already in the lake (use --force to rebuild them).
+Reruns skip days that are already in the lake, meaning the day's partition has readable parquet
+files with at least one row (use --force to rebuild them).
 """
 
 from __future__ import annotations
@@ -16,6 +17,8 @@ from datetime import date
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql import types as T
@@ -49,7 +52,16 @@ def day_url(src: dict, d: date) -> tuple[str, str]:
 
 
 def done(d: date) -> bool:
-    return (OUT / f"date={d.isoformat()}").exists()
+    """True if the day's partition has parquet files that can be read and hold at least one row.
+
+    Spark writes no _SUCCESS marker per partition with dynamic partition overwrite, so the data
+    itself is checked. Only the parquet footers are read, which is fast and needs no Spark.
+    """
+    parts = list((OUT / f"date={d.isoformat()}").glob("part-*.parquet"))
+    try:
+        return bool(parts) and sum(pq.read_metadata(p).num_rows for p in parts) > 0
+    except (OSError, pa.ArrowInvalid):
+        return False
 
 
 @pandas_udf(T.DoubleType())

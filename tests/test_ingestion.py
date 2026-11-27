@@ -38,3 +38,31 @@ def test_merge_existing_keeps_earlier_rows(tmp_path):
     pq.write_table(pa.table({"date": [1, 2, 3], "v": [10, 20, 30]}), path)
     out = merge_existing(path, pa.table({"date": [3, 4], "v": [31, 40]}), "date")
     assert out.to_pydict() == {"date": [1, 2, 3, 4], "v": [10, 20, 31, 40]}
+
+
+def test_done_checks_the_partition_data(tmp_path, monkeypatch):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from harbor_haze.ingestion import ais_history
+
+    monkeypatch.setattr(ais_history, "OUT", tmp_path)
+
+    def part(d: date):
+        p = tmp_path / f"date={d.isoformat()}"
+        p.mkdir()
+        return p / "part-00000.snappy.parquet"
+
+    missing, empty, zero_rows, garbage, valid = (date(2024, 9, i) for i in range(1, 6))
+    part(empty)
+    pq.write_table(pa.table({"mmsi": pa.array([], pa.int64())}), part(zero_rows))
+    good = tmp_path / "good.parquet"
+    pq.write_table(pa.table({"mmsi": [1, 2, 3]}), good)
+    part(garbage).write_bytes(good.read_bytes()[:-20])  # truncated: footer cut off
+    pq.write_table(pa.table({"mmsi": [1, 2, 3]}), part(valid))
+
+    assert not ais_history.done(missing)
+    assert not ais_history.done(empty)
+    assert not ais_history.done(zero_rows)
+    assert not ais_history.done(garbage)
+    assert ais_history.done(valid)

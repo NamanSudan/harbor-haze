@@ -41,3 +41,27 @@ def test_unknown_speed_counts_as_underway_not_dropped(spark):
     rows = [row(7, 0, 33.741, -118.241, None, 0, 70), row(8, 0, 33.741, -118.241, None, 5, 70)]
     r = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()[0]
     assert (r.n_vessels, r.n_stationary, r.n_underway) == (2, 1, 1)
+
+
+def test_vessel_that_anchors_inside_the_hour_counts_as_both(spark):
+    rows = [row(9, 0, 33.741, -118.241, 8.0, 0, 70), row(9, 40, 33.742, -118.242, 0.0, 1, 70)]
+    r = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()[0]
+    assert (r.n_vessels, r.n_stationary, r.n_underway) == (1, 1, 1)
+
+
+def test_stationary_plus_underway_covers_every_vessel(spark):
+    rows = [
+        row(1, 0, 33.741, -118.241, 0.0, 5, 71),  # moored all hour
+        row(2, 5, 33.741, -118.241, 11.0, 0, 81),  # underway all hour
+        row(3, 10, 33.742, -118.242, 6.0, 0, 70),  # slows down and anchors
+        row(3, 50, 33.742, -118.242, 0.1, 1, 70),
+        row(4, 20, 33.743, -118.243, None, 0, 52),  # unknown speed, underway status
+        row(5, 15, 33.60, -118.10, 0.3, 0, 60),  # drifting, other cell
+        row(5, 45, 33.60, -118.10, 9.0, 0, 60),
+    ]
+    out = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()
+    assert len(out) == 2
+    for r in out:
+        assert r.n_stationary + r.n_underway >= r.n_vessels
+    port = next(r for r in out if r.cell_lat == 33.74)
+    assert (port.n_vessels, port.n_stationary, port.n_underway) == (4, 2, 3)

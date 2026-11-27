@@ -46,7 +46,8 @@ historical backfill and the live stream, so training and serving see the same fe
 
 ## Quick start
 
-Requirements: Docker, [uv](https://docs.astral.sh/uv/), Java 17 (for Spark on the host), GNU make, Terraform (repo owner only).
+Requirements: Docker, [uv](https://docs.astral.sh/uv/), Java 17 (for Spark on the host; if `java -version`
+is not 17, set `JAVA_HOME` in `.env`), GNU make, Terraform (repo owner only).
 
 ```bash
 make setup                 # .venv from uv.lock + git hooks
@@ -64,7 +65,8 @@ make down
 ```
 
 All ingestion jobs are idempotent: rerunning a window rebuilds the same partitions, and AIS days
-already in the lake are skipped unless `--force` is passed.
+already in the lake (a partition with readable parquet files and at least one row) are skipped
+unless `--force` is passed.
 
 ## Repository layout
 
