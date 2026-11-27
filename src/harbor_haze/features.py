@@ -1,4 +1,4 @@
-"""Vessel-activity features per grid cell and hour.
+"""Vessel-activity features per hour, per grid cell and for the whole bay.
 
 The same function runs on the historical AIS (batch) and on the live AISStream topic
 (Structured Streaming), so the model sees identical features in training and serving.
@@ -31,6 +31,7 @@ AIS_SCHEMA = T.StructType(
 
 # AIS navigational status codes: 1 = at anchor, 5 = moored
 STATIONARY_STATUS = (1, 5)
+ANCHORED_STATUS = 1
 STATIONARY_SOG_KNOTS = 0.5
 
 
@@ -63,33 +64,17 @@ def _distinct_vessels(cond: Column) -> Column:
     return F.approx_count_distinct(F.when(cond, F.col("mmsi")), rsd=0.01)
 
 
-def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
-    """Aggregate positions to one row per (hour, cell).
-
-    Counting rules:
-
-    - Within a cell-hour a vessel counts as stationary if any of its pings is stationary
-      (status 1 or 5, or speed under 0.5 kn) and as underway if any of its pings is not.
-      A ship that arrives and anchors inside the hour is counted in both, so
-      ``n_stationary + n_underway >= n_vessels``. Exclusive counts can be derived:
-      stationary only = ``n_vessels - n_underway``, underway only = ``n_vessels - n_stationary``,
-      both = ``n_stationary + n_underway - n_vessels``.
-    - Counts are distinct vessels per cell-hour. Do not sum them across cells: a moving vessel
-      is counted in every cell it crosses.
-    - Counts use ``approx_count_distinct`` (needed for streaming), so they can be off by one.
-
-    The categories are not made mutually exclusive here because that needs a per-vessel
-    aggregation before the per-cell one, and the streaming job runs this same function in
-    update mode, where Spark does not support chained aggregations.
-    """
+def _vessel_aggregates(df: DataFrame, *keys: str) -> DataFrame:
+    """Per-hour vessel counts grouped by the hour plus ``keys``. Shared by the cell and bay-wide tables."""
     # coalesce: a ping with unknown speed and an "underway" status would otherwise be null and count as neither
     stationary = F.coalesce(
         F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS), F.lit(False)
     )
+    anchored = F.coalesce(F.col("status") == ANCHORED_STATUS, F.lit(False))
     cls = vessel_class(F.col("vessel_type"))
-    df = with_grid(positions, grid_deg)
+    cargo_tanker = cls.isin("cargo", "tanker")
     return (
-        df.groupBy(F.window("ts", "1 hour").alias("w"), "cell_lat", "cell_lon")
+        df.groupBy(F.window("ts", "1 hour").alias("w"), *keys)
         .agg(
             F.count(F.lit(1)).alias("n_pings"),
             _distinct_vessels(F.lit(True)).alias("n_vessels"),
@@ -101,7 +86,45 @@ def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
             _distinct_vessels(cls == "tug").alias("n_tug"),
             F.avg("sog").alias("mean_sog"),
             F.avg(F.when(~stationary, F.col("sog"))).alias("mean_sog_underway"),
+            _distinct_vessels(cargo_tanker).alias("n_cargo_tanker"),
+            _distinct_vessels(cargo_tanker & stationary).alias("n_cargo_tanker_stationary"),
+            _distinct_vessels(cargo_tanker & anchored).alias("n_cargo_tanker_anchored"),
         )
         .withColumn("hour_utc", F.col("w.start"))
         .drop("w")
     )
+
+
+def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
+    """Aggregate positions to one row per (hour, cell).
+
+    Counting rules:
+
+    - Within a cell-hour a vessel counts as stationary if any of its pings is stationary
+      (status 1 or 5, or speed under 0.5 kn) and as underway if any of its pings is not.
+      A ship that arrives and anchors inside the hour is counted in both, so
+      ``n_stationary + n_underway >= n_vessels``. Exclusive counts can be derived:
+      stationary only = ``n_vessels - n_underway``, underway only = ``n_vessels - n_stationary``,
+      both = ``n_stationary + n_underway - n_vessels``.
+    - ``n_cargo_tanker*`` use the same any-ping rule. Anchored means at least one ping with
+      status 1 (at anchor); status 5 (moored at a berth) is left out on purpose, because many
+      ships at a berth run on shore power.
+    - Counts are distinct vessels per cell-hour. Do not sum them across cells: a moving vessel
+      is counted in every cell it crosses. Use ``bay_hourly`` for bay-wide counts.
+    - Counts use ``approx_count_distinct`` (needed for streaming), so they can be off by one.
+
+    The categories are not made mutually exclusive here because that needs a per-vessel
+    aggregation before the per-cell one, and the streaming job runs this same function in
+    update mode, where Spark does not support chained aggregations.
+    """
+    return _vessel_aggregates(with_grid(positions, grid_deg), "cell_lat", "cell_lon")
+
+
+def bay_hourly(positions: DataFrame) -> DataFrame:
+    """Aggregate positions to one row per hour for the whole study area.
+
+    Same columns and rules as ``vessel_hourly`` without the cell columns. Each vessel is
+    counted once per hour, so these counts have no cross-cell overcount. Hours without pings
+    produce no row here; the batch job adds them.
+    """
+    return _vessel_aggregates(positions)

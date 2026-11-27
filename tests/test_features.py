@@ -2,7 +2,7 @@ from datetime import datetime
 
 import pytest
 
-from harbor_haze.features import AIS_SCHEMA, vessel_hourly
+from harbor_haze.features import AIS_SCHEMA, bay_hourly, vessel_hourly
 
 
 @pytest.fixture(scope="module")
@@ -65,3 +65,63 @@ def test_stationary_plus_underway_covers_every_vessel(spark):
         assert r.n_stationary + r.n_underway >= r.n_vessels
     port = next(r for r in out if r.cell_lat == 33.74)
     assert (port.n_vessels, port.n_stationary, port.n_underway) == (4, 2, 3)
+
+
+def test_cargo_tanker_anchored_means_status_1_only(spark):
+    rows = [
+        row(1, 0, 33.741, -118.241, 0.0, 1, 71),  # cargo at anchor
+        row(2, 0, 33.742, -118.242, 0.0, 5, 72),  # cargo moored at a berth: stationary, not anchored
+        row(3, 0, 33.743, -118.243, 0.0, 1, 52),  # tug at anchor: not cargo or tanker
+        row(4, 0, 33.744, -118.244, 11.0, 0, 84),  # tanker underway
+    ]
+    r = vessel_hourly(spark.createDataFrame(rows, AIS_SCHEMA), 0.02).collect()[0]
+    assert (r.n_cargo_tanker, r.n_cargo_tanker_stationary, r.n_cargo_tanker_anchored) == (3, 2, 1)
+    assert (r.n_vessels, r.n_tug) == (4, 1)
+
+
+def test_ship_crossing_two_cells_counts_once_bay_wide(spark):
+    rows = [
+        row(1, 0, 33.741, -118.241, 10.0, 0, 70),  # cargo underway in one cell ...
+        row(1, 20, 33.761, -118.241, 10.0, 0, 70),  # ... and in the next cell north, same hour
+        row(2, 30, 33.761, -118.241, 0.0, 1, 80),  # tanker at anchor in the second cell
+    ]
+    df = spark.createDataFrame(rows, AIS_SCHEMA)
+    cells = vessel_hourly(df, 0.02).collect()
+    assert len(cells) == 2
+    assert sum(r.n_cargo_tanker for r in cells) == 3  # the cargo ship is in both cells
+    (bay,) = bay_hourly(df).collect()
+    assert (bay.n_pings, bay.n_vessels, bay.n_cargo, bay.n_cargo_tanker) == (3, 2, 1, 2)
+    assert (bay.n_cargo_tanker_stationary, bay.n_cargo_tanker_anchored, bay.n_underway) == (1, 1, 1)
+    assert "cell_lat" not in bay.asDict()
+
+
+def test_bay_and_cell_tables_agree_on_one_cell(spark):
+    rows = [
+        row(1, 0, 33.741, -118.241, 0.0, 5, 71),
+        row(1, 30, 33.742, -118.242, 0.0, 1, 71),
+        row(2, 10, 33.745, -118.245, 12.0, 0, 81),
+        row(3, 5, 33.746, -118.246, 0.2, 1, 52),
+        row(4, 50, 33.747, -118.247, None, 0, 60),
+    ]
+    df = spark.createDataFrame(rows, AIS_SCHEMA)
+    (cell,) = vessel_hourly(df, 0.02).collect()
+    (bay,) = bay_hourly(df).collect()
+    cell = cell.asDict()
+    assert {k: cell[k] for k in bay.asDict()} == bay.asDict()
+
+
+def test_batch_bay_table_fills_empty_hours(spark):
+    from pyspark.sql import functions as F
+
+    from harbor_haze.ingestion.vessel_batch import bay_hourly_full
+
+    rows = [row(1, m, 33.741, -118.241, 0.0, 1, 71) for m in range(3)] + [row(2, 0, 33.741, -118.241, 9.0, 0, 70)]
+    ais = spark.createDataFrame(rows, AIS_SCHEMA).withColumn("date", F.to_date("ts"))
+    out = sorted(bay_hourly_full(ais, low_coverage_pings=2).collect(), key=lambda r: r.hour_utc)
+    assert len(out) == 24
+    assert [r.hour_utc.hour for r in out] == list(range(24))
+    busy = out[10]
+    assert (busy.n_pings, busy.n_vessels, busy.n_cargo_tanker_anchored, busy.low_coverage) == (4, 2, 1, False)
+    empty = out[3]
+    assert (empty.n_pings, empty.n_vessels, empty.n_cargo_tanker, empty.low_coverage) == (0, 0, 0, True)
+    assert empty.mean_sog is None

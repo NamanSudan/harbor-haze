@@ -41,7 +41,7 @@ ingest-weather: ## NOAA GHCN-Hourly -> lake/raw/ghcnh
 ingest-smoke: ## NOAA HMS smoke polygons -> lake/raw/hms_smoke
 	$(PY) -m harbor_haze.ingestion.hms_smoke --window $(WINDOW)
 
-vessel-features: ## lake/raw/ais -> lake/features/vessel_hourly + vessel registry (Spark)
+vessel-features: ## lake/raw/ais -> lake/features/vessel_hourly + bay_hourly + vessel registry (Spark)
 	$(PY) -m harbor_haze.ingestion.vessel_batch
 
 lake-summary: ## row counts per lake table + bytes downloaded

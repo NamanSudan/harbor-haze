@@ -1,6 +1,7 @@
 """Batch side of the vessel features: historical AIS in the lake -> hourly features + vessel registry.
 
 * lake/features/vessel_hourly  same columns as the streaming job's output (shared `vessel_hourly`)
+* lake/features/bay_hourly     the same counts for the whole bay, one row for every hour of every AIS day
 * lake/raw/vessel_registry      latest known type/size per MMSI, used by the stream-static join
 """
 
@@ -12,10 +13,33 @@ from pyspark.sql import Window
 from pyspark.sql import functions as F
 
 from harbor_haze.common import LAKE, load_config, log, record, setup_logging
-from harbor_haze.features import vessel_hourly
+from harbor_haze.features import bay_hourly, vessel_hourly
 from harbor_haze.spark import get_spark
 
 AIS = LAKE / "raw" / "ais"
+
+
+def bay_hourly_full(ais, low_coverage_pings: int):
+    """Bay-wide counts for every hour of every day in `ais`: hours without pings get zero counts.
+
+    `low_coverage` flags hours with fewer pings than the threshold (AIS gaps, not empty water).
+    """
+    day = F.to_timestamp("date")
+    hours = (
+        ais.select("date")
+        .distinct()
+        .select(
+            F.explode(F.sequence(day, day + F.expr("INTERVAL 23 HOURS"), F.expr("INTERVAL 1 HOUR"))).alias("hour_utc")
+        )
+    )
+    counts = bay_hourly(ais)
+    zero = {c: 0 for c in counts.columns if c.startswith("n_")}
+    return (
+        hours.join(counts, "hour_utc", "left")
+        .fillna(zero)
+        .withColumn("low_coverage", F.col("n_pings") < low_coverage_pings)
+        .select(*counts.columns, "low_coverage")
+    )
 
 
 def main() -> None:
@@ -30,6 +54,11 @@ def main() -> None:
         str(LAKE / "features" / "vessel_hourly")
     )
 
+    bay = bay_hourly_full(ais, cfg["features"]["low_coverage_pings"])
+    bay.repartition(1).sortWithinPartitions("hour_utc").write.mode("overwrite").parquet(
+        str(LAKE / "features" / "bay_hourly")
+    )
+
     latest = Window.partitionBy("mmsi").orderBy(F.col("ts").desc())
     registry = (
         ais.where(F.col("vessel_type").isNotNull() & (F.col("vessel_type") > 0))
@@ -41,8 +70,14 @@ def main() -> None:
 
     n_hours = spark.read.parquet(str(LAKE / "features" / "vessel_hourly")).count()
     n_vessels = spark.read.parquet(str(LAKE / "raw" / "vessel_registry")).count()
-    log.info("vessel features: %s cell-hours; registry: %s vessels", f"{n_hours:,}", f"{n_vessels:,}")
-    record("vessel_batch", cell_hours=n_hours, registry_vessels=n_vessels)
+    n_bay = spark.read.parquet(str(LAKE / "features" / "bay_hourly")).count()
+    log.info(
+        "vessel features: %s cell-hours, %s bay hours; registry: %s vessels",
+        f"{n_hours:,}",
+        f"{n_bay:,}",
+        f"{n_vessels:,}",
+    )
+    record("vessel_batch", cell_hours=n_hours, bay_hours=n_bay, registry_vessels=n_vessels)
     spark.stop()
 
 

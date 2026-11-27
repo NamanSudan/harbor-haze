@@ -40,6 +40,38 @@ def test_merge_existing_keeps_earlier_rows(tmp_path):
     assert out.to_pydict() == {"date": [1, 2, 3, 4], "v": [10, 20, 31, 40]}
 
 
+def test_wind_direction_999_becomes_null_and_calm_is_flagged():
+    import pyarrow as pa
+
+    from harbor_haze.ingestion.ghcnh import clean_wind
+
+    t = pa.table({"wind_direction": [999.0, 999.0, 250.0, None], "wind_speed": [0.0, 1.5, 3.1, None]})
+    out = clean_wind(t)
+    assert out["wind_direction"].to_pylist() == [None, None, 250.0, None]
+    assert out["wind_calm"].to_pylist() == [True, False, False, None]
+    assert clean_wind(out).equals(out)
+
+
+def test_merge_existing_with_a_new_column(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    from harbor_haze.ingestion.ghcnh import clean_wind, merge_existing
+
+    # file written by the loader before wind_calm existed, still holding a raw 999
+    path = tmp_path / "part-0.parquet"
+    pq.write_table(pa.table({"ts": [1, 2], "wind_direction": [999.0, 90.0], "wind_speed": [0.0, 2.0]}), path)
+    new = clean_wind(pa.table({"ts": [2, 3], "wind_direction": [100.0, 999.0], "wind_speed": [2.5, 0.0]}))
+    out = clean_wind(merge_existing(path, new, "ts"))
+    assert out.column_names == ["ts", "wind_direction", "wind_speed", "wind_calm"]
+    assert out.to_pydict() == {
+        "ts": [1, 2, 3],
+        "wind_direction": [None, 100.0, None],
+        "wind_speed": [0.0, 2.5, 0.0],
+        "wind_calm": [True, False, True],
+    }
+
+
 def test_done_checks_the_partition_data(tmp_path, monkeypatch):
     import pyarrow as pa
     import pyarrow.parquet as pq
