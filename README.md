@@ -86,9 +86,9 @@ tests/             unit tests (no network, Spark in local mode)
   Branch off `dev` (`feat/...`, `fix/...`), open a PR into `dev`, and get one teammate's approval.
   PRs into `dev` are squash-merged. When `dev` is ready, a PR from `dev` into `main` promotes it with a
   merge commit, so the two branches keep one history.
-- Nobody commits or pushes straight to `dev` or `main`. CI (`branch-policy`) fails PRs that break the
-  flow and flags any commit on `dev`/`main` that did not come from a merged PR; the git hooks from
-  `make setup` stop it locally. Every PR also needs green lint, tests, secret scan, image build and
+- Nobody commits or pushes straight to `dev` or `main`. GitHub branch protection requires a PR with one
+  approval and green checks before anything merges into either branch. CI (`branch-policy`) fails PRs that
+  break the flow, and the git hooks from `make setup` stop direct pushes locally. Every PR also needs green lint, tests, secret scan, image build and
   Terraform validate.
 - One issue per task, labelled by lane (`lane: ingestion`, `lane: warehouse`, `lane: modeling`, ...).
 - Keys live only in `.env` (gitignored). `make setup` installs pre-commit hooks that block

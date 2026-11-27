@@ -10,7 +10,7 @@ variable "repo_name" {
 
 variable "visibility" {
   type    = string
-  default = "private"
+  default = "public"
   validation {
     condition     = contains(["private", "public"], var.visibility)
     error_message = "visibility must be private or public"
@@ -55,7 +55,13 @@ variable "protected_branches" {
 }
 
 variable "enable_branch_protection" {
-  description = "Needs GitHub Pro/Team for a private repo (or a public repo)"
+  description = "Free on public repos; a private repo needs GitHub Pro/Team"
+  type        = bool
+  default     = true
+}
+
+variable "enforce_for_admins" {
+  description = "Apply the rules to repo admins too (false lets the owner merge without waiting)"
   type        = bool
   default     = false
 }
