@@ -64,7 +64,24 @@ def _distinct_vessels(cond: Column) -> Column:
 
 
 def vessel_hourly(positions: DataFrame, grid_deg: float) -> DataFrame:
-    """Aggregate positions to one row per (hour, cell)."""
+    """Aggregate positions to one row per (hour, cell).
+
+    Counting rules:
+
+    - Within a cell-hour a vessel counts as stationary if any of its pings is stationary
+      (status 1 or 5, or speed under 0.5 kn) and as underway if any of its pings is not.
+      A ship that arrives and anchors inside the hour is counted in both, so
+      ``n_stationary + n_underway >= n_vessels``. Exclusive counts can be derived:
+      stationary only = ``n_vessels - n_underway``, underway only = ``n_vessels - n_stationary``,
+      both = ``n_stationary + n_underway - n_vessels``.
+    - Counts are distinct vessels per cell-hour. Do not sum them across cells: a moving vessel
+      is counted in every cell it crosses.
+    - Counts use ``approx_count_distinct`` (needed for streaming), so they can be off by one.
+
+    The categories are not made mutually exclusive here because that needs a per-vessel
+    aggregation before the per-cell one, and the streaming job runs this same function in
+    update mode, where Spark does not support chained aggregations.
+    """
     # coalesce: a ping with unknown speed and an "underway" status would otherwise be null and count as neither
     stationary = F.coalesce(
         F.col("status").isin(*STATIONARY_STATUS) | (F.col("sog") < STATIONARY_SOG_KNOTS), F.lit(False)

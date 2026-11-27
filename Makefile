@@ -69,7 +69,8 @@ logs: ## follow logs, e.g. make logs s=producer-ais
 lint: ## ruff + terraform fmt
 	.venv/bin/ruff check src tests
 	.venv/bin/ruff format --check src tests
-	terraform fmt -check -recursive infra
+	@if command -v terraform >/dev/null; then terraform fmt -check -recursive infra; \
+	else echo "terraform not found, skipped terraform fmt (CI runs it)"; fi
 
 test: ## unit tests (no network, no Kafka)
 	$(PY) -m pytest -q
