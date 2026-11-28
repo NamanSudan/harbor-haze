@@ -64,6 +64,24 @@ services:
       kafka:
         condition: service_healthy
 
+  # --- warehouse (Postgres star schema; load with `make warehouse-load`) -------------
+  warehouse-pg:
+    image: postgres:16
+    container_name: harbor-warehouse-pg
+    environment:
+      POSTGRES_USER: ${WAREHOUSE_PG_USER:-harbor}
+      POSTGRES_PASSWORD: ${WAREHOUSE_PG_PASSWORD:-harbor}
+      POSTGRES_DB: ${WAREHOUSE_PG_DB:-harbor_haze}
+    ports:
+      - "${WAREHOUSE_PG_PORT:-5432}:5432"
+    volumes:
+      - warehouse-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${WAREHOUSE_PG_USER:-harbor} -d ${WAREHOUSE_PG_DB:-harbor_haze}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   # --- live pipeline (profile "live") -------------------------------------------------
   producer-ais:
     <<: *app
@@ -94,3 +112,4 @@ services:
 
 volumes:
   kafka-data:
+  warehouse-data:

@@ -47,6 +47,17 @@ vessel-features: ## lake/raw/ais -> lake/features/vessel_hourly + bay_hourly + v
 lake-summary: ## row counts per lake table + bytes downloaded
 	$(PY) -m harbor_haze.lake_summary
 
+# --- warehouse (Postgres star schema) ------------------------------------------------------
+.PHONY: warehouse-up warehouse-load warehouse-psql
+warehouse-up: ## start Postgres and wait until healthy
+	$(COMPOSE) up -d --wait warehouse-pg
+
+warehouse-load: warehouse-up ## lake -> Postgres star schema (drops and rebuilds the tables)
+	$(PY) -m harbor_haze.warehouse.build --lake data/lake
+
+warehouse-psql: ## open psql in the warehouse database
+	docker exec -it harbor-warehouse-pg psql -U $${WAREHOUSE_PG_USER:-harbor} -d $${WAREHOUSE_PG_DB:-harbor_haze}
+
 # --- streaming stack (Docker) --------------------------------------------------------------
 .PHONY: up live down ps logs
 up: ## Kafka + topics + console (http://localhost:8085)
